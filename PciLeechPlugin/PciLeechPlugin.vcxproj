@@ -47,8 +47,10 @@
     <LinkIncremental>true</LinkIncremental>
     <TargetName>$(ProjectName)</TargetName>
     <OutDir>$(SolutionDir)bin\$(Configuration)\x64\</OutDir>
-    <IncludePath>..\..\ReClass.NET\NativeCore;$(IncludePath)</IncludePath>
+    <IncludePath>..\..\ReClass.NET\NativeCore;..\..\memprocfs\includes;$(IncludePath)</IncludePath>
     <GenerateManifest>true</GenerateManifest>
+    <ReferencePath>..\..\memprocfs\includes;$(ReferencePath)</ReferencePath>
+    <LibraryPath>..\..\memprocfs\includes;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
@@ -73,6 +75,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>exports.def</ModuleDefinitionFile>
       <AdditionalDependencies>vmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\memprocfs\includes\lib64</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
