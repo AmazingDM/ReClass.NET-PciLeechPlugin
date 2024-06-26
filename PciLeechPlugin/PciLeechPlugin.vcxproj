@@ -21,13 +21,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>LLVM-MSVC_v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>LLVM-MSVC_v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -47,19 +47,23 @@
     <LinkIncremental>true</LinkIncremental>
     <TargetName>$(ProjectName)</TargetName>
     <OutDir>$(SolutionDir)bin\$(Configuration)\x64\</OutDir>
-    <IncludePath>..\..\ReClass.NET\NativeCore;..\..\memprocfs\includes;$(IncludePath)</IncludePath>
+    <IncludePath>..\..\ReClass.NET\NativeCore</IncludePath>
     <GenerateManifest>true</GenerateManifest>
-    <ReferencePath>..\..\memprocfs\includes;$(ReferencePath)</ReferencePath>
-    <LibraryPath>..\..\memprocfs\includes;$(LibraryPath)</LibraryPath>
+    <ReferencePath>
+    </ReferencePath>
+    <LibraryPath>I:\Repos\1.NekoGame\Neko-Solution\DMA\_ProjectRes\lib;$(LibraryPath)</LibraryPath>
+    <ExternalIncludePath>I:\Repos\1.NekoGame\Neko-Solution\DMA\_ProjectRes\include;$(ExternalIncludePath)</ExternalIncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
     <TargetName>$(ProjectName)</TargetName>
     <OutDir>$(SolutionDir)bin\$(Configuration)\x64\</OutDir>
-    <IncludePath>..\..\ReClass.NET\NativeCore;..\..\MemProcFS\includes;$(IncludePath)</IncludePath>
+    <IncludePath>..\..\ReClass.NET\NativeCore</IncludePath>
     <GenerateManifest>true</GenerateManifest>
-    <LibraryPath>..\..\MemProcFS\includes;$(LibraryPath)</LibraryPath>
-    <ReferencePath>..\..\MemProcFS\includes;$(ReferencePath)</ReferencePath>
+    <LibraryPath>I:\Repos\1.NekoGame\Neko-Solution\DMA\_ProjectRes\lib;$(LibraryPath)</LibraryPath>
+    <ReferencePath>
+    </ReferencePath>
+    <ExternalIncludePath>I:\Repos\1.NekoGame\Neko-Solution\DMA\_ProjectRes\include;$(ExternalIncludePath)</ExternalIncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -69,6 +73,8 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -89,6 +95,8 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

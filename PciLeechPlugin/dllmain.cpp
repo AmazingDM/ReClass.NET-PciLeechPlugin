@@ -1,8 +1,112 @@
 #include "vmmdll.h"
 #include <ReClassNET_Plugin.hpp>
+
 #include <algorithm>
 #include <cstdint>
+#include <ios>
+#include <sstream>
+#include <string>
+#include <thread>
 #include <vector>
+#include <format>
+
+static uint64_t cbSize = 0x80000;
+//callback for VfsFileListU
+static VOID cbAddFile(_Inout_ HANDLE h, _In_ LPCSTR uszName, _In_ ULONG64 cb, _In_opt_ PVMMDLL_VFS_FILELIST_EXINFO pExInfo)
+{
+	if (strcmp(uszName, "dtb.txt") == 0)
+		cbSize = cb;
+}
+
+struct Info
+{
+	uint32_t index;
+	uint32_t process_id;
+	uint64_t dtb;
+	uint64_t kernelAddr;
+	std::string name;
+};
+
+static VMM_HANDLE hVMM = 0;
+
+bool FixCr3(VMM_HANDLE hVMM, DWORD dwPID, std::string uszModuleName)
+{
+	PVMMDLL_MAP_MODULEENTRY module_entry;
+	bool result = VMMDLL_Map_GetModuleFromNameU(hVMM, dwPID, (LPSTR)uszModuleName.c_str(), &module_entry, NULL);
+	if (result)
+		return true; //Doesn't need to be patched lol
+
+	if (!VMMDLL_InitializePlugins(hVMM))
+	{
+		return false;
+	}
+
+	//have to sleep a little or we try reading the file before the plugin initializes fully
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+	while (true)
+	{
+		BYTE bytes[4] = { 0 };
+		DWORD i = 0;
+		auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\progress_percent.txt", bytes, 3, &i, 0);
+		if (nt == VMMDLL_STATUS_SUCCESS && atoi((LPSTR)bytes) == 100)
+			break;
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+
+	VMMDLL_VFS_FILELIST2 VfsFileList;
+	VfsFileList.dwVersion = VMMDLL_VFS_FILELIST_VERSION;
+	VfsFileList.h = 0;
+	VfsFileList.pfnAddDirectory = 0;
+	VfsFileList.pfnAddFile = cbAddFile;
+
+	result = VMMDLL_VfsListU(hVMM, (LPSTR)"\\misc\\procinfo\\", &VfsFileList);
+	if (!result)
+		return false;
+
+	//read the data from the txt and parse it
+	const size_t buffer_size = cbSize;
+	std::unique_ptr<BYTE[]> bytes(new BYTE[buffer_size]);
+	DWORD j = 0;
+	auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\dtb.txt", bytes.get(), buffer_size - 1, &j, 0);
+	if (nt != VMMDLL_STATUS_SUCCESS)
+		return false;
+
+	std::vector<uint64_t> possible_dtbs;
+	std::string lines(reinterpret_cast<char*>(bytes.get()));
+	std::istringstream iss(lines);
+	std::string line;
+
+	while (std::getline(iss, line))
+	{
+		Info info = { };
+
+		std::istringstream info_ss(line);
+		if (info_ss >> std::hex >> info.index >> std::dec >> info.process_id >> std::hex >> info.dtb >> info.kernelAddr >> info.name)
+		{
+			if (info.process_id == 0) //parts that lack a name or have a NULL pid are suspects
+				possible_dtbs.push_back(info.dtb);
+			if (uszModuleName.find(info.name) != std::string::npos)
+				possible_dtbs.push_back(info.dtb);
+		}
+	}
+
+	//loop over possible dtbs and set the config to use it til we find the correct one
+	for (size_t i = 0; i < possible_dtbs.size(); i++)
+	{
+		auto dtb = possible_dtbs[i];
+		VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_PROCESS_DTB | dwPID, dtb);
+		result = VMMDLL_Map_GetModuleFromNameU(hVMM, dwPID, (LPSTR)uszModuleName.c_str(), &module_entry, NULL);
+		auto base = VMMDLL_ProcessGetModuleBaseU(hVMM, dwPID, (LPSTR)uszModuleName.c_str());
+		if (result)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
 
 extern "C" void RC_CallConv EnumerateProcesses(EnumerateProcessCallback callbackProcess) {
 	if (callbackProcess == nullptr) {
@@ -13,10 +117,22 @@ extern "C" void RC_CallConv EnumerateProcesses(EnumerateProcessCallback callback
 	static bool init = false;
 
 	if (!init) {
-		LPSTR argv[] = { "", "-device", "fpga", "-memmap", "mmap.txt" };
-		BOOL result = VMMDLL_Initialize(3, argv);
+		LPCSTR argv[] =
+		{
+		(""),
+		("-device"),
+		("fpga"),
+		("-norefresh"),
+		("-pagefile0"),
+		("pagefile.sys"),
+		("-pagefile1"),
+		("swapfile.sys"),
+		("-memmap"),
+		("mmap.txt")
+		};
+		hVMM = VMMDLL_Initialize(3, argv);
 
-		if (!result) {
+		if (!hVMM) {
 			MessageBoxA(0, "FAIL: VMMDLL_Initialize", 0, MB_OK | MB_ICONERROR);
 
 			ExitProcess(-1);
@@ -29,11 +145,10 @@ extern "C" void RC_CallConv EnumerateProcesses(EnumerateProcessCallback callback
 	ULONG64 cPIDs = 0;
 	DWORD i, * pPIDs = NULL;
 
-	result =
-		VMMDLL_PidList(NULL, &cPIDs) && (pPIDs = (DWORD*)LocalAlloc(LMEM_ZEROINIT, cPIDs * sizeof(DWORD))) && VMMDLL_PidList(pPIDs, &cPIDs);
+	result = VMMDLL_PidList(hVMM, NULL, &cPIDs) && (pPIDs = (DWORD*)LocalAlloc(LMEM_ZEROINIT, cPIDs * sizeof(DWORD))) && VMMDLL_PidList(hVMM, pPIDs, &cPIDs);
 
 	if (!result) {
-		LocalFree(pPIDs);
+		VMMDLL_MemFree(pPIDs);
 		return;
 	}
 
@@ -46,14 +161,14 @@ extern "C" void RC_CallConv EnumerateProcesses(EnumerateProcessCallback callback
 		info.magic = VMMDLL_PROCESS_INFORMATION_MAGIC;
 		info.wVersion = VMMDLL_PROCESS_INFORMATION_VERSION;
 
-		result = VMMDLL_ProcessGetInformation(dwPID, &info, &cbInfo);
+		result = VMMDLL_ProcessGetInformation(hVMM, dwPID, &info, &cbInfo);
 
 		if (result) {
 			EnumerateProcessData data = {};
 			data.Id = dwPID;
 			MultiByteToUnicode(info.szNameLong, data.Name, PATH_MAXIMUM_LENGTH);
 
-			LPSTR szPathUser = VMMDLL_ProcessGetInformationString(dwPID, VMMDLL_PROCESS_INFORMATION_OPT_STRING_PATH_USER_IMAGE);
+			LPSTR szPathUser = VMMDLL_ProcessGetInformationString(hVMM, dwPID, VMMDLL_PROCESS_INFORMATION_OPT_STRING_PATH_USER_IMAGE);
 
 			if (szPathUser) {
 				MultiByteToUnicode(szPathUser, data.Path, PATH_MAXIMUM_LENGTH);
@@ -63,10 +178,12 @@ extern "C" void RC_CallConv EnumerateProcesses(EnumerateProcessCallback callback
 		}
 	}
 
-	LocalFree(pPIDs);
+	VMMDLL_MemFree(pPIDs);
 }
 
-extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle, EnumerateRemoteSectionsCallback callbackSection,
+extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(
+	RC_Pointer handle,
+	EnumerateRemoteSectionsCallback callbackSection,
 	EnumerateRemoteModulesCallback callbackModule) {
 	if (callbackSection == nullptr && callbackModule == nullptr) {
 		return;
@@ -76,13 +193,10 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 	DWORD dwPID = (DWORD)handle;
 	ULONG64 i, j;
 
-	DWORD cMemMapEntries = 0;
 	PVMMDLL_MAP_PTE pMemMapEntries = NULL;
 	PVMMDLL_MAP_PTEENTRY memMapEntry = NULL;
 
-	result = VMMDLL_Map_GetPte(dwPID, NULL, &cMemMapEntries, TRUE) && cMemMapEntries &&
-		(pMemMapEntries = (PVMMDLL_MAP_PTE)LocalAlloc(0, cMemMapEntries)) &&
-		VMMDLL_Map_GetPte(dwPID, pMemMapEntries, &cMemMapEntries, TRUE);
+	result = VMMDLL_Map_GetPte(hVMM, dwPID, TRUE, &pMemMapEntries);
 
 	if (!result) {
 		MessageBoxA(0, "FAIL: VMMDLL_Map_GetPte", 0, MB_OK | MB_ICONERROR);
@@ -91,8 +205,25 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 	}
 
 	if (!result) {
-		LocalFree(pMemMapEntries);
+		VMMDLL_MemFree(pMemMapEntries);
 
+		return;
+	}
+
+	SIZE_T cbProcessInformation = sizeof(VMMDLL_PROCESS_INFORMATION);
+	VMMDLL_PROCESS_INFORMATION GameInfo;
+	ZeroMemory(&GameInfo, sizeof(VMMDLL_PROCESS_INFORMATION));
+	GameInfo.magic = VMMDLL_PROCESS_INFORMATION_MAGIC;
+	GameInfo.wVersion = VMMDLL_PROCESS_INFORMATION_VERSION;
+	if (!VMMDLL_ProcessGetInformation(hVMM, dwPID, &GameInfo, &cbProcessInformation))
+	{
+		MessageBoxA(0, "FAIL: VMMDLL_ProcessGetInformation", 0, MB_OK | MB_ICONERROR);
+		return;
+	}
+
+	if (!FixCr3(hVMM, dwPID, GameInfo.szName))
+	{
+		MessageBoxA(0, std::format("FAIL: FixCr3 :{}", GameInfo.szName).c_str(), 0, MB_OK | MB_ICONERROR);
 		return;
 	}
 
@@ -141,14 +272,10 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 
 		sections.push_back(std::move(section));
 	}
-	LocalFree(pMemMapEntries);
+	VMMDLL_MemFree(pMemMapEntries);
 
-	DWORD cModuleEntries = 0;
 	PVMMDLL_MAP_MODULE pModuleEntries = NULL;
-
-	result = VMMDLL_Map_GetModule(dwPID, NULL, &cModuleEntries) && cModuleEntries &&
-		(pModuleEntries = (PVMMDLL_MAP_MODULE)LocalAlloc(0, cModuleEntries)) &&
-		VMMDLL_Map_GetModule(dwPID, pModuleEntries, &cModuleEntries);
+	result = VMMDLL_Map_GetModule(hVMM, dwPID, &pModuleEntries, VMMDLL_MODULE_FLAG_NORMAL);
 
 	if (!result) {
 		MessageBoxA(0, "FAIL: VMMDLL_Map_GetModule", 0, MB_OK | MB_ICONERROR);
@@ -157,7 +284,7 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 	}
 
 	if (!result) {
-		LocalFree(pModuleEntries);
+		VMMDLL_MemFree(pModuleEntries);
 
 		return;
 	}
@@ -184,9 +311,9 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 		DWORD cSections = 0;
 		PIMAGE_SECTION_HEADER sectionEntry, pSections = NULL;
 
-		result = VMMDLL_ProcessGetSections(dwPID, pModuleEntries->pMap[i].wszText, NULL, 0, &cSections) && cSections &&
+		result = VMMDLL_ProcessGetSections(hVMM, dwPID, pModuleEntries->pMap[i].wszText, NULL, 0, &cSections) && cSections &&
 			(pSections = (PIMAGE_SECTION_HEADER)LocalAlloc(0, cSections * sizeof(IMAGE_SECTION_HEADER))) &&
-			VMMDLL_ProcessGetSections(dwPID, pModuleEntries->pMap[i].wszText, pSections, cSections, &cSections);
+			VMMDLL_ProcessGetSections(hVMM, dwPID, pModuleEntries->pMap[i].wszText, pSections, cSections, &cSections);
 
 		if (result) {
 			for (j = 0; j < cSections; j++) {
@@ -219,11 +346,11 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 				}
 			}
 		}
-		LocalFree(pSections);
+		VMMDLL_MemFree(pSections);
 		// </warning>
 		// !!!!!!!!!!
 	}
-	//	LocalFree( pSections );
+	//	VMMDLL_MemFree( pSections );
 		// </warning>
 		// !!!!!!!!!!
 
@@ -246,7 +373,7 @@ extern "C" bool RC_CallConv IsProcessValid(RC_Pointer handle) {
 	info.magic = VMMDLL_PROCESS_INFORMATION_MAGIC;
 	info.wVersion = VMMDLL_PROCESS_INFORMATION_VERSION;
 
-	if (VMMDLL_ProcessGetInformation((DWORD)handle, &info, &cbInfo)) {
+	if (VMMDLL_ProcessGetInformation(hVMM, (DWORD)handle, &info, &cbInfo)) {
 		return true;
 	}
 
@@ -259,7 +386,7 @@ extern "C" void RC_CallConv CloseRemoteProcess(RC_Pointer handle) {
 extern "C" bool RC_CallConv ReadRemoteMemory(RC_Pointer handle, RC_Pointer address, RC_Pointer buffer, int offset, int size) {
 	buffer = reinterpret_cast<RC_Pointer>(reinterpret_cast<uintptr_t>(buffer) + offset);
 
-	if (VMMDLL_MemRead((DWORD)handle, (ULONG64)address, (PBYTE)buffer, size)) {
+	if (VMMDLL_MemReadEx(hVMM, (DWORD)handle, (ULONG64)address, (PBYTE)buffer, size, NULL, VMMDLL_FLAG_NOCACHE)) {
 		return true;
 	}
 
@@ -269,7 +396,7 @@ extern "C" bool RC_CallConv ReadRemoteMemory(RC_Pointer handle, RC_Pointer addre
 extern "C" bool RC_CallConv WriteRemoteMemory(RC_Pointer handle, RC_Pointer address, RC_Pointer buffer, int offset, int size) {
 	buffer = reinterpret_cast<RC_Pointer>(reinterpret_cast<uintptr_t>(buffer) + offset);
 
-	if (VMMDLL_MemWrite((DWORD)handle, (ULONG64)address, (PBYTE)buffer, size)) {
+	if (VMMDLL_MemWrite(hVMM, (DWORD)handle, (ULONG64)address, (PBYTE)buffer, size)) {
 		return true;
 	}
 
@@ -292,11 +419,11 @@ extern "C" bool RC_CallConv AttachDebuggerToProcess(RC_Pointer id) {
 extern "C" void RC_CallConv DetachDebuggerFromProcess(RC_Pointer id) {
 }
 
-extern "C" bool RC_CallConv AwaitDebugEvent(DebugEvent * evt, int timeoutInMilliseconds) {
+extern "C" bool RC_CallConv AwaitDebugEvent(DebugEvent* evt, int timeoutInMilliseconds) {
 	return false;
 }
 
-extern "C" void RC_CallConv HandleDebugEvent(DebugEvent * evt) {
+extern "C" void RC_CallConv HandleDebugEvent(DebugEvent* evt) {
 }
 
 extern "C" bool RC_CallConv SetHardwareBreakpoint(RC_Pointer id, RC_Pointer address, HardwareBreakpointRegister reg, HardwareBreakpointTrigger type,
